@@ -20,6 +20,7 @@ export function generate(ast: AST, options = DEFAULT_OPTIONS): string {
   return (
     [
       options.bannerComment,
+      importDependencies(ast, options),
       declareNamedTypes(ast, options, ast.standaloneName!),
       declareNamedInterfaces(ast, options, ast.standaloneName!),
       declareEnums(ast, options),
@@ -183,7 +184,11 @@ function generateRawType(ast: AST, options: Options): string {
     case 'INTERSECTION':
       return generateSetOperation(ast, options)
     case 'LITERAL':
-      return JSON.stringify(ast.params)
+      if (options.generateClassValidator && typeof ast.params === 'string') {
+        return escapeKeyName(String(ast.params).toUpperCase()) + '=' + JSON.stringify(ast.params) // To be clarified!
+      } else {
+        return JSON.stringify(ast.params)
+      }
     case 'NEVER':
       return 'never'
     case 'NUMBER':
@@ -197,6 +202,9 @@ function generateRawType(ast: AST, options: Options): string {
     case 'STRING':
       return 'string'
     case 'TUPLE':
+      if (options.generateClassValidator) {
+        return generateType(ast.params[0], options) // TODO - this is for sure not the final version ;)
+      }
       return (() => {
         const minItems = ast.minItems
         const maxItems = ast.maxItems || -1
@@ -275,12 +283,31 @@ function generateRawType(ast: AST, options: Options): string {
         return paramsToString(addSpreadParam(paramsList))
       })()
     case 'UNION':
-      return generateSetOperation(ast, options)
+      if (options.generateClassValidator) {
+        return generateEnum(ast, options)
+      } else {
+        return generateSetOperation(ast, options)
+      }
     case 'UNKNOWN':
       return 'unknown'
     case 'CUSTOM_TYPE':
       return ast.params
   }
+}
+
+/**
+ * Generate an Enum
+ */
+function generateEnum(ast: TIntersection | TUnion, options: Options): string {
+  // export enum DimensionType {
+  //   FLAT_FEE = 'flatFee',
+  //   ENERGY = 'energy',
+  //   CHARGING_TIME = 'chargingTime',
+  //   PARKING_TIME = 'parkingTime'
+  // }
+  const members = (ast as TUnion).params.map(_ => generateType(_, options))
+  const separator = ',\n'
+  return members.length === 1 ? members[0] : '{\n' + members.join(separator) + '\n}\n'
 }
 
 /**
@@ -295,7 +322,7 @@ function generateSetOperation(ast: TIntersection | TUnion, options: Options): st
 function generateInterface(ast: TInterface, options: Options): string {
   return (
     `{` +
-    '\n' +
+    '\n\n' +
     ast.params
       .filter(_ => !_.isPatternProperty && !_.isUnreachableDefinition)
       .map(
@@ -305,10 +332,10 @@ function generateInterface(ast: TInterface, options: Options): string {
       .map(
         ([isRequired, keyName, ast, type]) =>
           (hasComment(ast) && !ast.standaloneName ? generateComment(ast.comment, ast.deprecated) + '\n' : '') +
-          escapeKeyName(keyName) +
-          (isRequired ? '' : '?') +
-          ': ' +
-          type,
+          annotateProperty(ast, type, options) +
+          annotateOptionalProperty(ast, keyName, type, isRequired, options) +
+          annotateWithConcreteType(ast, keyName, type, options) +
+          generatePropertyDeclaration(ast, keyName, type, isRequired, options),
       )
       .join('\n') +
     '\n' +
@@ -342,9 +369,10 @@ function generateStandaloneEnum(ast: TEnum, options: Options): string {
 }
 
 function generateStandaloneInterface(ast: TNamedInterface, options: Options): string {
+  const exportType = options.generateClassValidator ? 'class' : 'interface'
   return (
     (hasComment(ast) ? generateComment(ast.comment, ast.deprecated) + '\n' : '') +
-    `export interface ${toSafeString(ast.standaloneName)} ` +
+    `export ${exportType} ${toSafeString(ast.standaloneName)} ` +
     (ast.superTypes.length > 0
       ? `extends ${ast.superTypes.map(superType => toSafeString(superType.standaloneName)).join(', ')} `
       : '') +
@@ -353,13 +381,23 @@ function generateStandaloneInterface(ast: TNamedInterface, options: Options): st
 }
 
 function generateStandaloneType(ast: ASTWithStandaloneName, options: Options): string {
-  return (
-    (hasComment(ast) ? generateComment(ast.comment) + '\n' : '') +
-    `export type ${toSafeString(ast.standaloneName)} = ${generateType(
-      omit<AST>(ast, 'standaloneName') as AST /* TODO */,
-      options,
-    )}`
-  )
+  if (options.generateClassValidator && ast.type === 'UNION') {
+    return (
+      (hasComment(ast) ? generateComment(ast.comment) + '\n' : '') +
+      `export enum ${toSafeString(ast.standaloneName)} ${generateType(
+        omit<AST>(ast, 'standaloneName') as AST /* TODO */,
+        options,
+      )}`
+    )
+  } else {
+    return (
+      (hasComment(ast) ? generateComment(ast.comment) + '\n' : '') +
+      `export type ${toSafeString(ast.standaloneName)} = ${generateType(
+        omit<AST>(ast, 'standaloneName') as AST /* TODO */,
+        options,
+      )}`
+    )
+  }
 }
 
 function escapeKeyName(keyName: string): string {
@@ -374,4 +412,106 @@ function escapeKeyName(keyName: string): string {
 
 function getSuperTypesAndParams(ast: TInterface): AST[] {
   return ast.params.map(param => param.ast).concat(ast.superTypes)
+}
+
+function annotateProperty(_ast: AST, type: string, options: Options): string {
+  let annotation = null
+  if (options.generateClassValidator) {
+    switch (type) {
+      case 'string':
+        annotation = '@IsString()'
+        break
+      case 'number':
+        annotation = '@IsNumber()'
+        break
+      case 'boolean':
+        annotation = '@IsBoolean()'
+        break
+      default:
+        // HACK - to be clarified
+        if (!type.includes('unknown')) {
+          annotation = `@ValidateNested()`
+        }
+    }
+  }
+  return annotation ? annotation + '\r' : ''
+}
+
+function annotateOptionalProperty(
+  _ast: AST,
+  _keyName: string,
+  type: string,
+  isRequired: boolean,
+  options: Options,
+): string {
+  let annotation = null
+  if (options.generateClassValidator && !isRequired && !type.includes('unknown')) {
+    annotation = `@IsOptional()`
+  }
+  return annotation ? annotation + '\r' : ''
+}
+
+function annotateWithConcreteType(ast: AST, _keyName: string, type: string, options: Options): string {
+  let annotation = null
+  if (options.generateClassValidator) {
+    switch (type) {
+      case 'string':
+      case 'number':
+      case 'boolean':
+        break
+      default:
+        if (type.includes('unknown')) {
+          // annotation = null // HACK!
+        } else if (ast.type === 'TUPLE') {
+          annotation = `@IsArray()`
+          // HACK - HACK - HACK - parser has a bug! - no way to properly handle an array of enum values
+          if (type.toLowerCase().includes('enum')) {
+            annotation += `\n@IsEnum(${type})`
+          } else {
+            annotation += `\n@Type(() => ${type})`
+          }
+        } else if (ast.type === 'UNION') {
+          annotation = `@IsEnum(${type})`
+        } else {
+          annotation = `@Type(() => ${type})`
+        }
+    }
+  }
+  return annotation ? annotation + '\r' : ''
+}
+
+function generatePropertyDeclaration(
+  ast: AST,
+  keyName: string,
+  type: string,
+  isRequired: boolean,
+  options: Options,
+): string {
+  const required = isRequired ? '' : '?'
+
+  if (options.generateClassValidator && ast.type !== 'UNKNOWN') {
+    const suffix = ast.type === 'TUPLE' ? '[]' : ''
+    return `public ${escapeKeyName(keyName)}${required}: ${type}${suffix};\n`
+  } else {
+    return `${escapeKeyName(keyName)}${required}: ${type};\n`
+  }
+}
+
+function importDependencies(_ast: AST, options: Options): string {
+  if (options.generateClassValidator) {
+    return `
+    import { Type } from 'class-transformer';
+    import {
+      IsArray,
+      IsBoolean,
+      IsEnum,
+      IsNumber,
+      IsOptional,
+      IsString,
+      Matches,
+      ValidateNested
+    } from 'class-validator';`
+  } else {
+    return ''
+  }
 }

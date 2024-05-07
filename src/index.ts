@@ -21,6 +21,7 @@ import yaml from 'js-yaml'
 export {EnumJSONSchema, JSONSchema, NamedEnumJSONSchema, CustomTypeJSONSchema} from './types/JSONSchema'
 
 export interface Options {
+  generateClassValidator: boolean
   /**
    * [$RefParser](https://github.com/APIDevTools/json-schema-ref-parser) Options, used when resolving `$ref`s
    */
@@ -85,6 +86,7 @@ export interface Options {
 }
 
 export const DEFAULT_OPTIONS: Options = {
+  generateClassValidator: false,
   $refOptions: {},
   additionalProperties: true, // TODO: default to empty schema (as per spec) instead
   bannerComment: `/* eslint-disable */
