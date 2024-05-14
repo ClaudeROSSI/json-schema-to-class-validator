@@ -453,6 +453,9 @@ function annotateOptionalProperty(
 
 function annotateWithConcreteType(ast: AST, _keyName: string, type: string, options: Options): string {
   let annotation = null
+  const generateAnArray = type.includes('[]')
+  type = type.replace('[]', '')
+
   if (options.generateClassValidator) {
     switch (type) {
       case 'string':
@@ -462,7 +465,7 @@ function annotateWithConcreteType(ast: AST, _keyName: string, type: string, opti
       default:
         if (type.includes('unknown')) {
           // annotation = null // HACK!
-        } else if (ast.type === 'TUPLE') {
+        } else if (ast.type === 'TUPLE' || generateAnArray) {
           annotation = `@IsArray()`
           // HACK - HACK - HACK - parser has a bug! - no way to properly handle an array of enum values
           if (type.toLowerCase().includes('enum')) {
